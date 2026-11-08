@@ -1,0 +1,122 @@
+import {Chess} from './vendor/chess.js';
+import {Fountain} from './ambience.js';
+import {GardenMusic} from './music.js';
+const $=id=>document.getElementById(id),game=new Chess(),names={p:'Peón',n:'Caballo',b:'Alfil',r:'Torre',q:'Dama',k:'Rey'},glyphs={p:'♟',n:'♞',b:'♝',r:'♜',q:'♛',k:'♚'},tips={p:'El peón avanza recto, pero captura en diagonal. En su primera jugada puede avanzar dos casillas si están libres.',n:'El caballo salta en L: dos casillas en una dirección y una perpendicular. Puede saltar sobre otras piezas.',b:'El alfil se desliza en diagonal. Cada alfil permanece siempre en casillas de un mismo color.',r:'La torre recorre filas y columnas. Las columnas abiertas son su territorio.',q:'La dama combina torre y alfil: puede moverse en línea recta y en diagonal.',k:'El rey se mueve una casilla. Nunca puede entrar en una casilla atacada. El enroque permite ponerlo a salvo.'};
+let selected=null,legal=[],busy=false,thinking=false,token=0,flipped=false,isFlat=true,overhead=false,sound=false,scene=null,promotionResolve=null,audio=null;
+try{const saved=JSON.parse(localStorage.getItem('la-jugada-ugt-partida-v1'));if(saved){game.loadPgn(saved.pgn);$('mode').value=saved.mode||'ai';$('level').value=saved.settingsVersion===2?(saved.level||'0'):'0';$('coach').checked=saved.coach!==false;$('raven-chat').checked=saved.ravenChat!==false}}catch{}
+// The playable 2D board starts without downloading or initializing WebGL.
+$('world').hidden=true;$('flat').hidden=false;$('flat-toggle').textContent='Tablero 3D';$('view').disabled=true;
+let sceneLoading=false,worker=null,aiTimer=null;
+function stopAITimer(){clearTimeout(aiTimer);aiTimer=null}
+function fallbackAI(kind,id){if(id!==token)return;stopAITimer();worker?.terminate();worker=null;thinking=false;const choices=game.moves({verbose:true});const move=choices[Math.floor(Math.random()*choices.length)];busy=false;$('advice').textContent='El motor avanzado no respondió. Continúas con una jugada legal del modo básico; puedes seguir jugando.';if(kind==='hint'){if(move){selected=move.from;legal=[move.to];$('guides').checked=true;paint()}update()}else if(move){void play(move,true)}else update()}
+function createWorker(){if(worker)return true;try{worker=new Worker(new URL('./worker.js',import.meta.url),{type:'module'});worker.onmessage=async({data})=>{if(data.id!==token)return;stopAITimer();thinking=false;if(!data.move){fallbackAI(data.kind,data.id);return}if(data.kind==='hint'){busy=false;selected=data.move.from;legal=[data.move.to];$('guides').checked=true;$('advice').textContent=`Prueba ${names[game.get(data.move.from).type].toLowerCase()} de ${data.move.from} a ${data.move.to}. Es una sugerencia de la IA básica, no una jugada infalible.`;paint();update()}else await play(data.move,true)};worker.onerror=()=>fallbackAI(thinking?'ai':'hint',token);return true}catch{worker=null;return false}}
+function save(){try{localStorage.setItem('la-jugada-ugt-partida-v1',JSON.stringify({pgn:game.pgn(),mode:$('mode').value,level:$('level').value,settingsVersion:2,coach:$('coach').checked,ravenChat:$('raven-chat').checked}))}catch{}}
+function kingInCheck(){if(!game.isCheck())return null;return game.board().flat().find(p=>p&&p.color===game.turn()&&p.type==='k')?.square}
+function lastMove(){return game.history({verbose:true}).at(-1)}
+function flatRender(){const checkedKing=kingInCheck(),files=flipped?'hgfedcba':'abcdefgh',ranks=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1],last=lastMove();$('flat').replaceChildren();for(const r of ranks)for(const f of files){const sq=f+r,p=game.get(sq),b=document.createElement('button');b.className='square '+((f.charCodeAt(0)+r)%2===0?'dark':'light')+(p?(p.color==='w'?' white-piece':' black-piece'):'')+(selected===sq?' selected':'')+(legal.includes(sq)&&($('guides').checked||legal.length===1)?' legal':'')+(last&&(last.from===sq||last.to===sq)?' last':'');b.dataset.square=sq;if(sq===checkedKing)b.classList.add('check');b.setAttribute('aria-label',`${sq}${p?', '+names[p.type]+(p.color==='w'?' blanco':' negro'): ', vacía'}`);b.textContent=p?glyphs[p.type]:'';const label=document.createElement('small');label.textContent=sq;b.append(label);b.onclick=()=>selectSquare(sq);$('flat').append(b)}}
+function paint(){scene?.highlight(selected,$('guides').checked?legal:[],lastMove(),kingInCheck());flatRender()}
+function sync(){scene?.sync(game.board());paint()}
+function update(){const turn=game.turn()==='w'?'blancas':'negras';$('turn').textContent=`Turno de ${turn}`;$('turn-dot').className='orb '+(game.turn()==='w'?'ice':'violet');$('move-number').textContent=String(Math.floor(game.history().length/2)+1).padStart(2,'0');$('opponent').textContent=$('mode').value==='ai'?'El guardián':'Caballeros de la noche';let title=thinking?'El guardián está pensando…':`Juegan las ${turn}`,sub='Selecciona una pieza para descubrir sus posibilidades.';
+if(game.isCheckmate()){title='Jaque mate';sub=`Victoria de las ${game.turn()==='w'?'negras':'blancas'}. El reino tiene un nuevo soberano.`}else if(game.isStalemate()){title='Tablas por ahogado';sub='No hay movimientos legales, pero el rey no está en jaque.'}else if(game.isInsufficientMaterial()){title='Tablas · material insuficiente';sub='No quedan piezas suficientes para dar mate.'}else if(game.isThreefoldRepetition()){title='Tablas por repetición';sub='La misma posición se ha repetido tres veces.'}else if(game.isDraw()){title='Tablas';sub='Se ha alcanzado el límite de 50 jugadas sin capturas ni movimientos de peón.'}else if(game.isCheck()){title=`¡Jaque a las ${turn}!`;sub='Protege al rey: muévelo, bloquea el ataque o captura la pieza atacante.'}
+$('status').textContent=title;$('subtitle').textContent=sub;$('hint').disabled=busy||game.isGameOver();$('undo').disabled=busy||!game.history().length;$('new').disabled=busy;$('mode').disabled=busy;$('level').disabled=busy;
+const moves=game.history({verbose:true});$('count').textContent=moves.length+' medias jugadas';$('history').replaceChildren();if(!moves.length){const p=document.createElement('p');p.className='muted';p.textContent='La historia todavía está por escribir.';$('history').append(p)}for(let i=0;i<moves.length;i+=2){const row=document.createElement('div');row.className='history-row';for(const t of [String(i/2+1)+'.',moves[i].san,moves[i+1]?.san||'…']){const s=document.createElement('span');s.textContent=t;row.append(s)}$('history').append(row)}$('history').scrollTop=$('history').scrollHeight;
+for(const color of ['w','b'])$(color==='w'?'white-captures':'black-captures').textContent=moves.filter(m=>m.color===color&&m.captured).map(m=>glyphs[m.captured]).join('');}
+function tone(capture=false){if(!sound)return;try{audio??=new (window.AudioContext||window.webkitAudioContext)();audio.resume();const osc=audio.createOscillator(),gain=audio.createGain();osc.type='sine';osc.frequency.setValueAtTime(capture?180:440,audio.currentTime);osc.frequency.exponentialRampToValueAtTime(capture?60:220,audio.currentTime+.15);gain.gain.setValueAtTime(.08,audio.currentTime);gain.gain.exponentialRampToValueAtTime(.001,audio.currentTime+.22);osc.connect(gain);gain.connect(audio.destination);osc.start();osc.stop(audio.currentTime+.23)}catch{}}
+async function choosePromotion(){return new Promise(resolve=>{promotionResolve=resolve;$('promotion').showModal()})}
+for(const p of ['q','r','b','n']){const b=document.createElement('button');b.textContent=glyphs[p];b.title=names[p];b.setAttribute('aria-label',names[p]);b.onclick=()=>{$('promotion').close();promotionResolve?.(p);promotionResolve=null};$('promotion-options').append(b)}$('promotion').addEventListener('cancel',()=>{promotionResolve?.(null);promotionResolve=null});
+async function selectSquare(sq){if(busy||game.isGameOver()||($('mode').value==='ai'&&game.turn()==='b'))return;const p=game.get(sq);if(selected&&legal.includes(sq)){let promotion;const candidates=game.moves({square:selected,verbose:true}).filter(m=>m.to===sq);if(candidates.some(m=>m.promotion)){busy=true;update();promotion=await choosePromotion();busy=false;if(!promotion){update();return}}const proposed={from:selected,to:sq,...(promotion?{promotion}:{})};if($('coach').checked){const trial=new Chess(game.fen());trial.move(proposed);if(!trial.isGameOver()&&trial.isAttacked(sq,trial.turn())){busy=true;update();const accepted=await warnDanger(names[promotion||game.get(selected).type],sq);busy=false;update();if(!accepted)return}}await play(proposed);return}if(p&&p.color===game.turn()){selected=sq;legal=game.moves({square:sq,verbose:true}).map(m=>m.to);$('advice').textContent=`${names[p.type]} en ${sq}. ${tips[p.type]}${legal.length?'':' Ahora mismo no tiene movimientos legales.'}`}else{selected=null;legal=[]}paint()}
+async function play(move,fromAI=false){busy=true;thinking=false;let result;try{result=game.move(move)}catch{busy=false;update();return}selected=null;legal=[];update();save();try{const animation=isFlat?animateFlat(result):scene?.animate(result);await animationDeadline(animation,1400)}catch{scene?.cancelAnimation?.();$('advice').textContent='Animación omitida para que puedas continuar la partida.'}finally{scene?.cancelAnimation?.();tone(Boolean(result.captured));sync();busy=false;update();reaction(result);if(!fromAI)queueAI()}}
+function animationDeadline(animation,ms){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Animation timeout')),ms);Promise.resolve(animation).then(value=>{clearTimeout(timer);resolve(value)},error=>{clearTimeout(timer);reject(error)})})}
+function request(kind){if(game.isGameOver())return;busy=true;thinking=kind==='ai';const id=++token;update();if(!createWorker()){fallbackAI(kind,id);return}aiTimer=setTimeout(()=>fallbackAI(kind,id),4500);try{worker.postMessage({id,fen:game.fen(),level:kind==='hint'?2:Number($('level').value),kind})}catch{fallbackAI(kind,id)}}
+function queueAI(){if($('mode').value==='ai'&&game.turn()==='b'&&!game.isGameOver()){busy=true;thinking=true;update();const current=token;setTimeout(()=>{if(current===token)request('ai')},550)}}
+$('hint').onclick=()=>request('hint');$('undo').onclick=()=>{token++;game.undo();if($('mode').value==='ai'&&game.turn()==='b')game.undo();selected=null;legal=[];sync();save();update();$('advice').textContent='Has vuelto atrás. Prueba otra idea: antes de mover, mira qué amenaza tu rival.'};$('new').onclick=()=>$('restart').showModal();$('cancel-new').onclick=()=>$('restart').close();$('confirm-new').onclick=()=>{$('restart').close();token++;game.reset();selected=null;legal=[];busy=false;thinking=false;sync();save();update();$('advice').textContent='Empieza ocupando el centro con un peón y sacando tus caballos y alfiles.'};$('mode').onchange=()=>{token++;save();update();queueAI()};$('level').onchange=()=>{levelInfo();save()};$('coach').onchange=save;$('guides').onchange=paint;$('rotate').onclick=()=>{flipped=!flipped;scene?.rotate();flatRender()};$('view').onclick=()=>{if(!scene||isFlat)return;overhead=!overhead;scene.view();$('view').textContent=overhead?'Vista inclinada':'Vista cenital';$('view').setAttribute('aria-pressed',String(overhead))};$('flat-toggle').onclick=async()=>{if(sceneLoading||busy)return;if(!scene){sceneLoading=true;$('flat-toggle').textContent='Cargando 3D…';$('flat-toggle').disabled=true;try{const {createScene}=await import('./scene.js');$('world').hidden=false;scene=createScene($('world'),selectSquare);if(flipped)scene.rotate();scene.sync(game.board())}catch{$('world').hidden=true;$('flat').hidden=false;isFlat=true;$('advice').textContent='No se pudo iniciar el 3D. El tablero 2D sigue disponible.';return}finally{sceneLoading=false;$('flat-toggle').disabled=false;$('flat-toggle').textContent='Tablero 3D'}}isFlat=!isFlat;$('world').hidden=isFlat;$('flat').hidden=!isFlat;$('flat-toggle').textContent=isFlat?'Tablero 3D':'Tablero 2D';$('view').disabled=isFlat;paint()};$('sound').onclick=()=>{sound=!sound;$('sound').textContent=`♫ Sonido: ${sound?'sí':'no'}`;$('sound').setAttribute('aria-pressed',String(sound));tone()};levelInfo();sync();update();queueAI();
+
+function levelInfo(){const info=['El guardián mueve al azar. Practica cómo se mueve cada pieza, sin presión.','Ve capturas sencillas, pero comete despistes. Empieza a proteger tus piezas.','Tiene en cuenta tu respuesta. Practica amenazas y defensas.','Busca hasta tres medias jugadas, con tiempo limitado. Un reto mayor; sigue siendo una IA básica.'];$('level-info').textContent=info[Number($('level').value)]}
+let dangerResolve=null,banterTimer=null;
+function warnDanger(name,square){$('danger-text').textContent=`Si mueves ${name.toLowerCase()} a ${square}, quedará en una casilla atacada por el rival. No siempre es un error: podría estar defendida o formar parte de un sacrificio.`;$('danger').showModal();return new Promise(resolve=>{dangerResolve=resolve})}
+function closeDanger(result){$('danger').close();dangerResolve?.(result);dangerResolve=null}
+$('reconsider').onclick=()=>closeDanger(false);$('accept-risk').onclick=()=>closeDanger(true);$('danger').addEventListener('cancel',()=>{dangerResolve?.(false);dangerResolve=null});
+function say(text){if(!$('raven-chat').checked)return;ravenSpeak(text);clearTimeout(banterTimer);$('banter').textContent=text;$('banter').classList.add('show');banterTimer=setTimeout(()=>$('banter').classList.remove('show'),4200)}
+function reaction(move){kingReaction(move);if(game.isCheckmate()){say('¡Se acabó el baile! El rey pide la revancha.');return}if(game.isDraw()){say('Ni para ti ni para mí. ¿Un té en el claustro?');return}if(game.isCheck()){say('¡Majestad, que nos ven!');return}if(move.promotion){say('¡Ascenso concedido! El peón estrena cargo.');return}if(move.flags.includes('k')||move.flags.includes('q')){say('El rey se muda. La torre lleva las maletas.');return}if(move.captured){const lines=['¡Con permiso! Esa casilla estaba a mi nombre.','Me retiro… pero presentaré una reclamación.','Una menos en la reunión del consejo.','No era una derrota. Era una salida dramática.'];say(lines[Math.floor(Math.random()*lines.length)]);return}if(move.piece==='n'){say('En línea recta me aburro. ¡Al trote!');return}if(game.history().length===1)say('Pasito a pasito. Hasta el rey empezó aprendiendo.')}
+function sizeFlat(){const stage=$('stage');const size=Math.max(160,Math.floor(Math.min(stage.clientWidth-30,stage.clientHeight-42,760)));$('flat').style.setProperty('--board-size',size+'px')}
+new ResizeObserver(sizeFlat).observe($('stage'));sizeFlat();
+async function animateFlat(move){if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;const from=$('flat').querySelector(`[data-square="${move.from}"]`),to=$('flat').querySelector(`[data-square="${move.to}"]`);if(!from||!to)return;const a=from.getBoundingClientRect(),b=to.getBoundingClientRect(),ghost=document.createElement('span');ghost.className='ghost-piece';ghost.textContent=glyphs[move.piece];Object.assign(ghost.style,{left:a.left+'px',top:a.top+'px',width:a.width+'px',height:a.height+'px',fontSize:getComputedStyle(from).fontSize,color:move.color==='w'?'#f2eddf':'#392449'});document.body.append(ghost);const textNode=from.firstChild,old=textNode?.textContent;if(textNode?.nodeType===3)textNode.textContent='';const dx=b.left-a.left,dy=b.top-a.top;try{await animationDeadline(ghost.animate([{transform:'translate(0,0) scale(1)'},{transform:`translate(${dx*.5}px,${dy*.5-22}px) scale(1.12)`},{transform:`translate(${dx}px,${dy}px) scale(1)`}],{duration:move.piece==='n'?550:420,easing:'ease-in-out'}).finished,900);if(move.captured){await animationDeadline(to.animate([{opacity:1,transform:'scale(1) rotate(0deg)'},{opacity:.2,transform:'scale(.5) rotate(12deg)'}],{duration:160}).finished,300)}}catch{}finally{ghost.remove();if(textNode?.nodeType===3)textNode.textContent=old}}
+const fountain=new Fountain();let waterBusy=false;
+$('water').onclick=async()=>{if(waterBusy)return;waterBusy=true;try{if(fountain.enabled)fountain.stop();else await fountain.start();$('water').textContent=fountain.enabled?'◉ Silenciar agua':'◉ Activar agua';$('water').setAttribute('aria-pressed',String(fountain.enabled));$('water-status').textContent=fountain.enabled?'Río tranquilo · sonando':'Río tranquilo · apagado'}catch{$('water-status').textContent='No se ha podido activar el audio en este navegador.'}finally{waterBusy=false}};
+$('water-volume').oninput=()=>fountain.setVolume(Number($('water-volume').value)/100);
+document.addEventListener('visibilitychange',()=>{void fountain.setHidden(document.hidden).catch(()=>{});void music.setHidden(document.hidden).catch(()=>{})});
+
+// Nox uses board facts for advice; personality comments never replace move hints.
+let ravenTimer=null,lessonIndex=0;
+function ravenSpeak(text){$('raven-quip').textContent=text;clearTimeout(ravenTimer);$('raven-card').classList.remove('raven-speaking');void $('raven-card').offsetWidth;$('raven-card').classList.add('raven-speaking');ravenTimer=setTimeout(()=>$('raven-card').classList.remove('raven-speaking'),1100)}
+function ravenLesson(){if(busy){ravenSpeak('Graa… dejemos terminar esta jugada. Después lo miramos juntos.');return}let advice;if(game.isCheckmate())advice='La partida ha terminado en mate. Usa Deshacer para volver a la posición anterior y buscar una defensa. Perder también enseña.';else if(game.isGameOver())advice='La partida ha terminado en tablas. Prueba una nueva partida: hoy puedes centrarte en desarrollar caballos y alfiles.';else if(game.isCheck())advice='Estás en jaque. Mira si puedes capturar al atacante, interponer una pieza o mover al rey. Las casillas iluminadas muestran solo jugadas legales.';else if(selected&&game.get(selected))advice=names[game.get(selected).type]+' en '+selected+'. '+tips[game.get(selected).type];else{const turn=game.turn(),enemy=turn==='w'?'b':'w',exposed=game.board().flat().filter(p=>p&&p.color===turn&&p.type!=='k'&&game.isAttacked(p.square,enemy)).sort((a,b)=>({q:9,r:5,b:3,n:3,p:1}[b.type]-{q:9,r:5,b:3,n:3,p:1}[a.type]));if(exposed.length){const p=exposed[0];advice=`Ojo con ${names[p.type].toLowerCase()} en ${p.square}: el rival ataca esa casilla. Puede estar defendida, así que comprueba el intercambio antes de huir.`}else{const lessons=['Antes de mover, hazte dos preguntas: ¿qué amenaza mi rival y qué pieza dejo desprotegida?','Intenta ocupar el centro: las casillas d4, e4, d5 y e5 ayudan a tus piezas a moverse con libertad.','Saca caballos y alfiles antes de pasear la dama. Tener varias piezas activas suele ser mejor que mover siempre la misma.','Una pista para los cambios: peón ≈ 1, caballo y alfil ≈ 3, torre ≈ 5, dama ≈ 9. Son valores orientativos; la posición también cuenta.','El enroque mueve rey y torre a la vez. Selecciona el rey: si es legal, aparecerá su destino a dos casillas.','Cuando puedas capturar, no te precipites: imagina qué pieza rival podría capturarte después.'];advice=lessons[lessonIndex++%lessons.length]}}$('advice').textContent=advice;ravenSpeak('Graa… un buen plan empieza mirando. Vamos por partes.')}
+$('raven').onclick=ravenLesson;$('raven-tip').onclick=ravenLesson;
+$('raven-chat').onchange=()=>{$('king-quip').textContent=$('raven-chat').checked?'Mi reino, tus jugadas. Sin prisas.':'El rey guarda silencio. Nox sigue a tu disposición.';save();clearTimeout(banterTimer);$('banter').classList.remove('show');ravenSpeak($('raven-chat').checked?'Graa… ya echaba de menos mi propia voz.':'Silencio de biblioteca. Tócame si necesitas consejo.')};
+const music=new GardenMusic();let musicBusy=false;
+$('music').onclick=async()=>{if(musicBusy)return;musicBusy=true;$('music').disabled=true;try{if(music.enabled)music.stop();else await music.start();$('music').textContent=music.enabled?'Ⅱ Pausar melodía':'▶ Escuchar melodía';$('music').setAttribute('aria-pressed',String(music.enabled));$('music-status').textContent=music.enabled?'El jardín de Nox · sonando':'Composición original · apagada';$('music').parentElement.classList.toggle('playing',music.enabled)}catch{music.stop();$('music-status').textContent='No se pudo iniciar el audio. Pulsa de nuevo para intentarlo.'}finally{musicBusy=false;$('music').disabled=false}};
+$('music-volume').oninput=()=>music.setVolume(Number($('music-volume').value)/100);
+
+// Native disclosure keeps keyboard access and settings independent of the board.
+$('close-menu').onclick=()=>{$('game-menu').open=false;$('game-menu').querySelector('summary').focus()};
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('game-menu').open){$('game-menu').open=false;$('game-menu').querySelector('summary').focus()}});
+document.addEventListener('click',event=>{if($('game-menu').open&&!$('game-menu').contains(event.target))$('game-menu').open=false});
+
+// Header shortcuts share the original audio handlers and their busy guards.
+function syncQuickAudio(){
+  for(const [id,on,name] of [['quick-music',music.enabled,'melodía'],['quick-water',fountain.enabled,'río']]){
+    $(id).setAttribute('aria-pressed',String(on));
+    $(id).title=(on?'Desactivar ':'Activar ')+name;
+    $(id).setAttribute('aria-label',$(id).title);
+  }
+}
+for(const [original,shortcut] of [['music','quick-music'],['water','quick-water']]){
+  const toggle=$(original).onclick;
+  $(original).onclick=async()=>{try{await toggle()}finally{syncQuickAudio()}};
+  $(shortcut).onclick=()=>$(original).onclick();
+}
+syncQuickAudio();
+function fullscreenElement(){return document.fullscreenElement||document.webkitFullscreenElement}
+function syncFullscreen(){
+  const active=!!fullscreenElement();
+  $('fullscreen').setAttribute('aria-pressed',String(active));
+  $('fullscreen').title=active?'Salir de pantalla completa (Esc)':'Pantalla completa';
+  $('fullscreen').setAttribute('aria-label',$('fullscreen').title);
+  $('fullscreen').querySelector('span').textContent=active?'Salir de pantalla completa':'Pantalla completa';
+}
+$('fullscreen').onclick=async()=>{
+  try{
+    if(fullscreenElement()){
+      const exit=document.exitFullscreen||document.webkitExitFullscreen;
+      if(exit)await exit.call(document);
+    }else{
+      const root=document.documentElement;
+      const enter=root.requestFullscreen||root.webkitRequestFullscreen;
+      if(!enter)throw new Error('unsupported');
+      await enter.call(root);
+    }
+    $('screen-status').textContent='';
+  }catch{
+    $('screen-status').textContent='Este navegador no permite activar la pantalla completa. En PC puedes usar F11.';
+    $('advice').textContent=$('screen-status').textContent;
+  }
+};
+document.addEventListener('fullscreenchange',syncFullscreen);
+document.addEventListener('webkitfullscreenchange',syncFullscreen);
+
+// Txuwa provides comic reactions; Nox retains all position-based teaching.
+function kingReaction(move){
+  if(!$('raven-chat').checked)return;
+  let mood='calm',line='';
+  if(game.isCheckmate()){mood=game.turn()==='b'?'proud':'shocked';line=game.turn()==='b'?'¡Victoria! Sabía que mi estratega tenía talento.':'Exijo una revancha. Después de estudiar un poquito.'}
+  else if(game.isDraw()){line='Tablas. Lo llamaremos diplomacia.'}
+  else if(game.isCheck()){mood=game.turn()==='w'?'shocked':'proud';line=game.turn()==='w'?'¡Mi corona! Nox, ¿tenemos una salida?':'Un jaque con elegancia. Sin perder la cabeza.'}
+  else if(move.promotion){mood='proud';line='De peón a figura de la corte. ¡Ascenso concedido!'}
+  else if(move.flags.includes('k')||move.flags.includes('q')){line='Me traslado a un palacio más seguro.'}
+  else if(move.captured){mood=move.color==='w'?'proud':'grumpy';line=move.color==='w'?'Esa casilla ya tiene nuevo propietario.':'Esa pieza estaba de vacaciones. No admito preguntas.'}
+  else if(game.history().length===1){line='Empieza la historia. Nox, vigila mi corona.'}
+  else if(game.history().length%6===0){line='Pensar despacio también es una estrategia real.'}
+  if(line){$('king-quip').textContent=line;$('king-card').dataset.mood=mood;}
+}
+$('king-about').onclick=()=>$('king-story').showModal();
+$('close-king').onclick=()=>$('king-story').close();
+if(!$('raven-chat').checked)$('king-quip').textContent='El rey guarda silencio. Nox sigue a tu disposición.';

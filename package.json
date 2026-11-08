@@ -1,0 +1,9 @@
+{
+  "name": "la-jugada-ugt",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node camera-tests.mjs && node tests.mjs && node interface-tests.mjs && node music-tests.mjs"
+  }
+}

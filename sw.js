@@ -1,0 +1,5 @@
+const CACHE='la-jugada-ugt-v1';
+const ASSETS=["./index.html", "./style.css", "./jugada.css", "./install.js", "./manifest.json", "./favicon.svg", "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png", "./app.js", "./ai.js", "./ambience.js", "./music.js", "./scene.js", "./camera-fit.js", "./worker.js", "./assets/txuwa.jpeg", "./assets/ugt.png", "./assets/sanir.jpg", "./assets/jugada.svg", "./vendor/chess.js", "./vendor/three.module.js", "./vendor/GrenzeGotisch.ttf"];
+self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
+self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('la-jugada-ugt-')&&key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
+self.addEventListener('fetch',event=>{if(event.request.method!=='GET'||new URL(event.request.url).origin!==self.location.origin)return;event.respondWith(caches.open(CACHE).then(async cache=>(await cache.match(event.request))||(event.request.mode==='navigate'?await cache.match('./index.html'):null)||fetch(event.request)));});
